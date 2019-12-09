@@ -195,12 +195,11 @@ class SpecialSlicers(object):
 
 class FancySlicing(object):
 
-    def _get_array_slices(self, slices, isNavigation=None):
-        try:
-            len(slices)
-        except TypeError:
-            slices = (slices,)
 
+    def _get_array_slices(self, slices, isNavigation=None):
+
+        if isinstance(slices,(slice,np.ndarray,list,int,float)):
+            slices = (slices,)
         slices_ = tuple()
         for sl in slices:
             if isinstance(sl, roi.BaseROI):
@@ -263,16 +262,93 @@ class FancySlicing(object):
 
         array_slices = []
         for slice_, axis in zip(slices, self.axes_manager._axes):
-            if (isinstance(slice_, slice) or
-                    len(self.axes_manager._axes) < 2):
+            #print("slice",slice_)
+            if isinstance(slice_, (slice,list)):# or len(self.axes_manager._axes) < 2):
                 array_slices.append(axis._get_array_slices(slice_))
             else:
                 if isinstance(slice_, float):
                     slice_ = axis.value2index(slice_)
                 array_slices.append(slice_)
-        return tuple(array_slices)
+        return tuple(array_slices)    
+#    def _get_array_slices(self, slices, isNavigation=None):
+#        try:
+#            len(slices)
+#        except TypeError:
+#            slices = (slices,)
+#
+#        slices_ = tuple()
+#        for sl in slices:
+#            if isinstance(sl, roi.BaseROI):
+#                if isinstance(sl, roi.SpanROI):
+#                    slices_ += (slice(float(sl.left), float(sl.right), None),)
+#                elif isinstance(sl, roi.Point1DROI):
+#                    slices_ += (float(sl.value),)
+#                elif isinstance(sl, roi.Point2DROI):
+#                    slices_ += (float(sl.x), float(sl.y))
+#                elif isinstance(sl, roi.RectangularROI):
+#                    slices_ += (
+#                        slice(float(sl.left), float(sl.right), None),
+#                        slice(float(sl.top), float(sl.bottom), None),
+#                    )
+#            else:
+#                slices_ += (sl,)
+#        slices = slices_
+#        del slices_
+#        _orig_slices = slices
+#
+#        has_nav = True if isNavigation is None else isNavigation
+#        has_signal = True if isNavigation is None else not isNavigation
+#
+#        # Create a deepcopy of self that contains a view of self.data
+#
+#        nav_idx = [el.index_in_array for el in
+#                   self.axes_manager.navigation_axes]
+#        signal_idx = [el.index_in_array for el in
+#                      self.axes_manager.signal_axes]
+#
+#        if not has_signal:
+#            idx = nav_idx
+#        elif not has_nav:
+#            idx = signal_idx
+#        else:
+#            idx = nav_idx + signal_idx
+#
+#        # Add support for Ellipsis
+#        if Ellipsis in _orig_slices:
+#            _orig_slices = list(_orig_slices)
+#            # Expand the first Ellipsis
+#            ellipsis_index = _orig_slices.index(Ellipsis)
+#            _orig_slices.remove(Ellipsis)
+#            _orig_slices = (_orig_slices[:ellipsis_index] + [slice(None), ] *
+#                            max(0, len(idx) - len(_orig_slices)) +
+#                            _orig_slices[ellipsis_index:])
+#            # Replace all the following Ellipses by :
+#            while Ellipsis in _orig_slices:
+#                _orig_slices[_orig_slices.index(Ellipsis)] = slice(None)
+#            _orig_slices = tuple(_orig_slices)
+#
+#        if len(_orig_slices) > len(idx):
+#            raise IndexError("too many indices")
+#
+#        slices = np.array([slice(None,)] *
+#                          len(self.axes_manager._axes))
+#
+#        slices[idx] = _orig_slices + (slice(None),) * max(
+#            0, len(idx) - len(_orig_slices))
+#
+#        array_slices = []
+#        for slice_, axis in zip(slices, self.axes_manager._axes):
+#            if (isinstance(slice_, slice) or
+#                    len(self.axes_manager._axes) < 2):
+#                array_slices.append(axis._get_array_slices(slice_))
+#            else:
+#                if isinstance(slice_, float):
+#                    slice_ = axis.value2index(slice_)
+#                array_slices.append(slice_)
+#        return tuple(array_slices)
 
     def _slicer(self, slices, isNavigation=None, out=None):
+
         array_slices = self._get_array_slices(slices, isNavigation)
         new_data = self.data[array_slices]
         if new_data.size == 1 and new_data.dtype is np.dtype('O'):
@@ -285,12 +361,15 @@ class FancySlicing(object):
             _obj = self._deepcopy_with_new_data(new_data,
                                                 copy_variance=True)
             _to_remove = []
+            # multidimensional indexing need the axes reducing...
+            #_to_reduce = []
             for slice_, axis in zip(array_slices, _obj.axes_manager._axes):
-                if (isinstance(slice_, slice) or
+                if ((isinstance(slice_, (slice,list)) ) or  #and nindices==1
                         len(self.axes_manager._axes) < 2):
                     axis._slice_me(slice_)
                 else:
                     _to_remove.append(axis.index_in_axes_manager)
+                
             for _ind in reversed(sorted(_to_remove)):
                 _obj._remove_axis(_ind)
         else:
@@ -299,7 +378,7 @@ class FancySlicing(object):
             i = 0
             for slice_, axis_src in zip(array_slices, self.axes_manager._axes):
                 axis_src = axis_src.copy()
-                if (isinstance(slice_, slice) or
+                if (isinstance(slice_, (slice,list)) or
                         len(self.axes_manager._axes) < 2):
                     axis_src._slice_me(slice_)
                     axis_dst = out.axes_manager._axes[i]
@@ -336,3 +415,68 @@ class FancySlicing(object):
             return _obj
         else:
             out.events.data_changed.trigger(obj=out)
+
+#    def _slicer(self, slices, isNavigation=None, out=None):
+#        array_slices = self._get_array_slices(slices, isNavigation)
+#        new_data = self.data[array_slices]
+#        if new_data.size == 1 and new_data.dtype is np.dtype('O'):
+#            if isinstance(new_data[0], (np.ndarray, dArray)):
+#                return self.__class__(new_data[0]).transpose(navigation_axes=0)
+#            else:
+#                return new_data[0]
+#
+#        if out is None:
+#            _obj = self._deepcopy_with_new_data(new_data,
+#                                                copy_variance=True)
+#            _to_remove = []
+#            for slice_, axis in zip(array_slices, _obj.axes_manager._axes):
+#                if (isinstance(slice_, slice) or
+#                        len(self.axes_manager._axes) < 2):
+#                    axis._slice_me(slice_)
+#                else:
+#                    _to_remove.append(axis.index_in_axes_manager)
+#            for _ind in reversed(sorted(_to_remove)):
+#                _obj._remove_axis(_ind)
+#        else:
+#            out.data = new_data
+#            _obj = out
+#            i = 0
+#            for slice_, axis_src in zip(array_slices, self.axes_manager._axes):
+#                axis_src = axis_src.copy()
+#                if (isinstance(slice_, slice) or
+#                        len(self.axes_manager._axes) < 2):
+#                    axis_src._slice_me(slice_)
+#                    axis_dst = out.axes_manager._axes[i]
+#                    i += 1
+#                    axis_dst.update_from(axis_src, attributes=(
+#                        "scale", "offset", "size"))
+#
+#        if hasattr(self, "_additional_slicing_targets"):
+#            for ta in self._additional_slicing_targets:
+#                try:
+#                    t = attrgetter(ta)(self)
+#                    if out is None:
+#                        if hasattr(t, '_slicer'):
+#                            attrsetter(
+#                                _obj,
+#                                ta,
+#                                t._slicer(
+#                                    slices,
+#                                    isNavigation))
+#                    else:
+#                        target = attrgetter(ta)(_obj)
+#                        t._slicer(
+#                            slices,
+#                            isNavigation,
+#                            out=target)
+#
+#                except AttributeError:
+#                    pass
+#        # _obj.get_dimensions_from_data() # replots, so we do it manually:
+#        dc = _obj.data
+#        for axis in _obj.axes_manager._axes:
+#            axis.size = int(dc.shape[axis.index_in_array])
+#        if out is None:
+#            return _obj
+#        else:
+#            out.events.data_changed.trigger(obj=out)

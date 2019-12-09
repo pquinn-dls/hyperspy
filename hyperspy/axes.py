@@ -368,36 +368,129 @@ class BaseDataAxis(t.HasTraits):
             value = self._get_index_from_value_with_units(value)
         return value
 
-    def _get_array_slices(self, slice_):
-        """Returns a slice to slice the corresponding data axis.
+#    def _get_array_slices(self, slice_):
+#        """Returns a slice to slice the corresponding data axis.
+#
+#        Parameters
+#        ----------
+#        slice_ : {float, int, slice}
+#
+#        Returns
+#        -------
+#        my_slice : slice
+#
+#        """
+#        if isinstance(slice_, slice):
+#            if not self.is_linear and isfloat(slice_.step):
+#                raise ValueError(
+#                    "Float steps are only supported for linear axes.")
+#
+#        v2i = self.value2index
+#
+#        if isinstance(slice_, slice):
+#            start = slice_.start
+#            stop = slice_.stop
+#            step = slice_.step
+#        else:
+#            if isfloat(slice_):
+#                start = v2i(slice_)
+#            else:
+#                start = self._get_positive_index(slice_)
+#            stop = start + 1
+#            step = None
+#
+#        start = self._parse_string_for_slice(start)
+#        stop = self._parse_string_for_slice(stop)
+#        step = self._parse_string_for_slice(step)
+#
+#        if isfloat(step):
+#            step = int(round(step / self.scale))
+#
+#        if isfloat(start):
+#            try:
+#                start = v2i(start)
+#            except ValueError:
+#                if start > self.high_value:
+#                    # The start value is above the axis limit
+#                    raise IndexError(
+#                        "Start value above axis high bound for  axis %s."
+#                        "value: %f high_bound: %f" % (repr(self), start,
+#                                                      self.high_value))
+#                else:
+#                    # The start value is below the axis limit,
+#                    # we slice from the start.
+#                    start = None
+#        if isfloat(stop):
+#            try:
+#                stop = v2i(stop)
+#            except ValueError:
+#                if stop < self.low_value:
+#                    # The stop value is below the axis limits
+#                    raise IndexError(
+#                        "Stop value below axis low bound for  axis %s."
+#                        "value: %f low_bound: %f" % (repr(self), stop,
+#                                                     self.low_value))
+#                else:
+#                    # The stop value is below the axis limit,
+#                    # we slice until the end.
+#                    stop = None
+#
+#        if step == 0:
+#            raise ValueError("slice step cannot be zero")
+#
+#        return slice(start, stop, step)
+
+
+    def is_index_sequential(self,input_list):
+        return (all((input_list[i+1]-input_list[i])==1 for i in range(len(input_list)-1)) or 
+            all(input_list[i+1]-input_list[i]==-1 for i in range(len(input_list)-1)))
+
+    def is_index_integer(self,input_list):
+        if isinstance(input_list,np.ndarray):
+            return np.array_equal(input_list, input_list.astype(int))
+        elif isinstance(input_list,list):
+            return all(isinstance(x, int) for x in input_list)
+
+    def is_index_boolean(self,input_list):
+        if isinstance(input_list,np.ndarray):
+            return np.array_equal(input_list, input_list.astype(bool))
+        elif isinstance(input_list,list):
+            return all(isinstance(x, bool) for x in input_list)
+        
+    def _slice_me(self, slice_):
+        """Returns a slice to slice the corresponding data axis and set the 
+        axis accordingly.
 
         Parameters
         ----------
-        slice_ : {float, int, slice}
+        slice_ : {int, slice}
 
         Returns
         -------
         my_slice : slice
 
         """
-        if isinstance(slice_, slice):
-            if not self.is_linear and isfloat(slice_.step):
-                raise ValueError(
-                    "Float steps are only supported for linear axes.")
+        my_slice = self._get_array_slices(slice_)
+        if isinstance(slice_,slice):
+            start, step = my_slice.start, my_slice.step
 
+            if start is None:
+                if step is None or step > 0:
+                    start = 0
+                else:
+                    start = self.size - 1
+            self.axis = self.axis[my_slice]
+        elif isinstance(my_slice,(list,np.ndarray)):
+            if not self.is_index_sequential(slice_) or self.is_index_boolean(slice_):
+                if isinstance(self,LinearDataAxis):
+                    self.convert_to_non_linear_axis()
+            self.axis = self.axis[np.array(my_slice)]
+        self.update_axis()
+
+        return my_slice
+
+    def parse_start_stop_step(self,start,stop,step):
         v2i = self.value2index
-
-        if isinstance(slice_, slice):
-            start = slice_.start
-            stop = slice_.stop
-            step = slice_.step
-        else:
-            if isfloat(slice_):
-                start = v2i(slice_)
-            else:
-                start = self._get_positive_index(slice_)
-            stop = start + 1
-            step = None
 
         start = self._parse_string_for_slice(start)
         stop = self._parse_string_for_slice(stop)
@@ -439,33 +532,70 @@ class BaseDataAxis(t.HasTraits):
             raise ValueError("slice step cannot be zero")
 
         return slice(start, stop, step)
-
-    def _slice_me(self, slice_):
-        """Returns a slice to slice the corresponding data axis and set the 
-        axis accordingly.
+    def _get_array_slices(self, slice_):
+        """Returns a slice to slice the corresponding data axis.
 
         Parameters
         ----------
-        slice_ : {int, slice}
+        slice_ : {float, int, slice}
 
         Returns
         -------
         my_slice : slice
 
         """
-        my_slice = self._get_array_slices(slice_)
-        start, step = my_slice.start, my_slice.step
-
-        if start is None:
-            if step is None or step > 0:
-                start = 0
-            else:
-                start = self.size - 1
-
-        self.axis = self.axis[my_slice]
-        self.update_axis()
-
+        if isinstance(slice_, slice):
+            if not self.is_linear and isfloat(slice_.step):
+                raise ValueError(
+                    "Float steps are only supported for linear axes.")
+        if isinstance(slice_, slice):
+            start = slice_.start
+            stop = slice_.stop
+            step = slice_.step
+            my_slice= self.parse_start_stop_step(start,stop,step)
+        elif isfloat(slice_):
+            start = self.value2index(slice_)
+            stop = start + 1
+            step = None 
+            my_slice= self.parse_start_stop_step(start,stop,step)
+        elif isinstance(slice_,(list,np.ndarray)):
+            my_slice = slice_
+        else:
+            start = self._get_positive_index(slice_)
+            stop = start + 1
+            step = None 
+            my_slice= self.parse_start_stop_step(start,stop,step)
         return my_slice
+
+
+
+#
+#    def _slice_me(self, slice_):
+#        """Returns a slice to slice the corresponding data axis and set the 
+#        axis accordingly.
+#
+#        Parameters
+#        ----------
+#        slice_ : {int, slice}
+#
+#        Returns
+#        -------
+#        my_slice : slice
+#
+#        """
+#        my_slice = self._get_array_slices(slice_)
+#        start, step = my_slice.start, my_slice.step
+#
+#        if start is None:
+#            if step is None or step > 0:
+#                start = 0
+#            else:
+#                start = self.size - 1
+#
+#        self.axis = self.axis[my_slice]
+#        self.update_axis()
+#
+#        return my_slice
 
     def _get_name(self):
         name = (self.name
@@ -822,18 +952,53 @@ class LinearDataAxis(FunctionalDataAxis, UnitConversion):
 
         """
         my_slice = self._get_array_slices(slice_)
-        start, step = my_slice.start, my_slice.step
-
-        if start is None:
-            if step is None or step > 0:
-                start = 0
+        if isinstance(slice_,slice):
+            start, step = my_slice.start, my_slice.step
+            if start is None:
+                if step is None or step > 0:
+                    start = 0
+                else:
+                    start = self.size - 1
+            self.offset = self.index2value(start)
+            if step is not None:
+                self.scale *= step
+        elif isinstance(my_slice,(list,np.ndarray)):
+            if not self.is_index_sequential(slice_):
+                if isinstance(self,FunctionalDataAxis):
+                    self.convert_to_non_linear_axis()
             else:
-                start = self.size - 1
-        self.offset = self.index2value(start)
-        if step is not None:
-            self.scale *= step
-
+                self.offset = my_slice[0]
+                self.scale *= (my_slice[1]-my_slice[0])
+            self.axis = self.axis[np.array(my_slice)]
+        self.update_axis()
         return my_slice
+    
+#    def _slice_me(self, slice_):
+#        """Returns a slice to slice the corresponding data axis and
+#        change the offset and scale of the LinearDataAxis accordingly.
+#
+#        Parameters
+#        ----------
+#        slice_ : {float, int, slice}
+#
+#        Returns
+#        -------
+#        my_slice : slice
+#
+#        """
+#        my_slice = self._get_array_slices(slice_)
+#        start, step = my_slice.start, my_slice.step
+#
+#        if start is None:
+#            if step is None or step > 0:
+#                start = 0
+#            else:
+#                start = self.size - 1
+#        self.offset = self.index2value(start)
+#        if step is not None:
+#            self.scale *= step
+#
+#        return my_slice
 
     def get_axis_dictionary(self):
         d = super().get_axis_dictionary()
