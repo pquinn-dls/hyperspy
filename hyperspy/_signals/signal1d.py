@@ -45,6 +45,7 @@ from hyperspy.signal_tools import (
     SmoothingSavitzkyGolay,
     SmoothingLowess,
     SmoothingTV,
+    Snip1DFilter,
     ButterworthFilter)
 from hyperspy.misc.math.filter.snip1d import snip1d
 from hyperspy.ui_registry import DISPLAY_DT, TOOLKIT_DT
@@ -967,8 +968,9 @@ class Signal1D(BaseSignal, CommonSignal1D):
     smooth_lowess.__doc__ %= (SHOW_PROGRESSBAR_ARG, PARALLEL_ARG, DISPLAY_DT,
                               TOOLKIT_DT)
 
-    def snip_filter(self, filter_window=13, iterations=16, show_progressbar=None,
-                  parallel=None):
+    def snip_filter(self, filter_window=None, number_of_iterations=None, 
+                    show_progressbar=None,
+                  parallel=None,display=True, toolkit=None):
         """
         Snip filter to remove background in place.
 
@@ -981,10 +983,18 @@ class Signal1D(BaseSignal, CommonSignal1D):
             If the signal dimension is not 1.
         """
         self._check_signal_dimension_equals_one()
-        self.map(snip1d, filter_window=filter_window,
-                 iterations=iterations,
-                 show_progressbar=show_progressbar,
-                 parallel=parallel)
+        if filter_window is None or number_of_iterations is None:
+            snip = Snip1DFilter(self)
+            if filter_window is not None:
+                snip.filter_window = filter_window
+            if number_of_iterations is not None:
+                snip.number_of_iterations = number_of_iterations
+            return snip.gui(display=display, toolkit=toolkit)
+        else:        
+            self.map(snip1d, filter_window=filter_window,
+                     number_of_iterations=number_of_iterations,
+                     show_progressbar=show_progressbar,
+                     parallel=parallel)
 
 
     def smooth_tv(self, smoothing_parameter=None, show_progressbar=None,
@@ -1129,7 +1139,7 @@ class Signal1D(BaseSignal, CommonSignal1D):
             
             
             return spectra
-    remove_background.__doc__ %= (SHOW_PROGRESSBAR_ARG, DISPLAY_DT, TOOLKIT_DT)
+#    remove_background.__doc__ %= (SHOW_PROGRESSBAR_ARG, DISPLAY_DT, TOOLKIT_DT)
 
     @interactive_range_selector
     def crop_signal1D(self, left_value=None, right_value=None,):

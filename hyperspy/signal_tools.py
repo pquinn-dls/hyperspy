@@ -501,6 +501,33 @@ class SmoothingTV(Smoothing):
         self.signal._replot()
 
 
+
+@add_gui_method(toolkey="Signal1D.filter_snip")
+class Snip1DFilter(Smoothing):
+    filter_window     = t.Int(30)
+    number_of_iterations = t.Int(20)
+
+    def _filter_window_parameter_changed(self, old, new):
+        self.update_lines()
+        
+    def _number_of_iterations_parameter_changed(self, old, new):
+        self.update_lines()
+
+    def model2plot(self, axes_manager=None):
+        self.single_spectrum.data = self.signal().copy()
+        self.single_spectrum.snip_filter(
+            filter_window=self.filter_window,
+            number_of_iterations=self.number_of_iterations,                        
+            show_progressbar=False)
+
+        return self.single_spectrum.data
+
+    def apply(self):
+        self.signal.snip_filter(
+            filter_window=self.filter_window,
+            number_of_iterations=self.number_of_iterations)
+        self.signal._replot()
+
 @add_gui_method(toolkey="Signal1D.smooth_butterworth")
 class ButterworthFilter(Smoothing):
     cutoff_frequency_ratio = t.Range(0.01, 1., 0.01)

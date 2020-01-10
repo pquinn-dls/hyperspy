@@ -1,8 +1,8 @@
 import numpy as np
 
 def snip1d(spectrum,
-                width=13, decrease_factor=np.sqrt(2),
-                iterations=16):
+                filter_window=13, decrease_factor=np.sqrt(2),
+                number_of_iterations=16):
     """
     use snip algorithm to obtain background
 
@@ -10,11 +10,11 @@ def snip1d(spectrum,
     ----------
     spectrum : array
         intensity spectrum or array 
-    width : int, optional
+    filter_window : int, optional
         window size in indices. Typically twice the fwhm of peaks in spectrum 
     decrease_factor : float, optional
         gradually decrease of window size, default as sqrt(2)
-    iterations : int, optional
+    number_of_iterations : int, optional
         Number of iterations in snip filter
 
 
@@ -34,7 +34,7 @@ def snip1d(spectrum,
 
     background = np.array(spectrum)
     spectra_size = len(background)
-    window_p = int(width)
+    window_p = int(filter_window)
     background = np.log(np.log(background + 1) + 1)
     index      = np.arange(spectra_size)
     
@@ -46,7 +46,7 @@ def snip1d(spectrum,
     hi_index = np.where(hi_index<spectra_size,hi_index,spectra_size-1)
     lo_index = np.where(lo_index<spectra_size-2*window_p,lo_index,index - 
                         (spectra_size - index) +1)
-    for j in range(iterations):
+    for j in range(number_of_iterations):
         temp = (background[lo_index] +
                 background[hi_index]) / 2.
 
