@@ -38,7 +38,6 @@ from hyperspy.signal_tools import SpikesRemoval
 from hyperspy.models.model1d import Model1D
 
 
-from hyperspy.misc.utils import signal_range_from_roi
 from hyperspy.defaults_parser import preferences
 from hyperspy.signal_tools import (
     Signal1DCalibration,
@@ -57,6 +56,8 @@ from hyperspy import components1d
 from hyperspy._signals.lazy import LazySignal
 from hyperspy.docstrings.signal1d import CROP_PARAMETER_DOC
 from hyperspy.docstrings.signal import SHOW_PROGRESSBAR_ARG, PARALLEL_ARG
+from hyperspy.misc.test_utils import ignore_warning
+
 
 _logger = logging.getLogger(__name__)
 
@@ -776,7 +777,8 @@ class Signal1D(BaseSignal, CommonSignal1D):
             If l and r are floats the `signal_range` will be in axis units (for
             example eV). If l and r are integers the `signal_range` will be in
             index units. When `signal_range` is "interactive" (default) the
-            range is selected using a GUI.
+            range is selected using a GUI. Note that ROIs can be used
+            in place of a tuple.
 
         Returns
         --------
@@ -813,7 +815,6 @@ class Signal1D(BaseSignal, CommonSignal1D):
             "be removed in v2.0. Use a `roi.SpanRoi` followed by `integrate1D` "
             "instead.")
         deprecation_warning(msg)
-        signal_range = signal_range_from_roi(signal_range)
 
         if signal_range == 'interactive':
             self_copy = self.deepcopy()
@@ -826,7 +827,6 @@ class Signal1D(BaseSignal, CommonSignal1D):
         return integrated_signal1D
 
     def _integrate_in_range_commandline(self, signal_range):
-        signal_range = signal_range_from_roi(signal_range)
         e1 = signal_range[0]
         e2 = signal_range[1]
         integrated_signal1D = self.isig[e1:e2].integrate1D(-1)
@@ -1063,7 +1063,6 @@ class Signal1D(BaseSignal, CommonSignal1D):
     def _remove_background_cli(
             self, signal_range, background_estimator, fast=True,
             zero_fill=False, show_progressbar=None):
-        signal_range = signal_range_from_roi(signal_range)
         from hyperspy.models.model1d import Model1D
         model = Model1D(self)
         model.append(background_estimator)
@@ -1074,8 +1073,10 @@ class Signal1D(BaseSignal, CommonSignal1D):
             only_current=False)
         if fast and not self._lazy:
             try:
-                axis = self.axes_manager.signal_axes[0].axis
-                result = self - background_estimator.function_nd(axis)
+                axis = self.axes_manager.signal_axes[0]
+                scale_factor = axis.scale if self.metadata.Signal.binned else 1
+                bkg = background_estimator.function_nd(axis.axis) * scale_factor
+                result = self - bkg
             except MemoryError:
                 result = self - model.as_signal(
                     show_progressbar=show_progressbar)
@@ -1104,16 +1105,64 @@ class Signal1D(BaseSignal, CommonSignal1D):
             zero_fill=False,
             plot_remainder=True,
             show_progressbar=None, display=True, toolkit=None):
-
+        """
+        Remove the background, either in place using a gui or returned as a new
+        spectrum using the command line.
+        Parameters
+        ----------
+        signal_range : "interactive", tuple of ints or floats, optional
+            If this argument is not specified, the signal range has to be
+            selected using a GUI. And the original spectrum will be replaced.
+            If tuple is given, the a spectrum will be returned.
+        background_type : str
+            The type of component which should be used to fit the background.
+            Possible components: PowerLaw, Gaussian, Offset, Polynomial, 
+            Lorentzian, SkewNormal.
+            If Polynomial is used, the polynomial order can be specified
+        polynomial_order : int, default 2
+            Specify the polynomial order if a Polynomial background is used.
+        fast : bool
+            If True, perform an approximative estimation of the parameters.
+            If False, the signal is fitted using non-linear least squares
+            afterwards.This is slower compared to the estimation but
+            possibly more accurate.
+        zero_fill : bool
+            If True, all spectral channels lower than the lower bound of the
+            fitting range will be set to zero (this is the default behavior
+            of Gatan's DigitalMicrograph). Setting this value to False
+            allows for inspection of the quality of background fit throughout
+            the pre-fitting region.
+        plot_remainder : bool
+            If True, add a (green) line previewing the remainder signal after
+            background removal. This preview is obtained from a Fast calculation
+            so the result may be different if a NLLS calculation is finally
+            performed.
+        %s
+        %s
+        %s
+        Examples
+        --------
+        Using gui, replaces spectrum s
+        >>> s = hs.signals.Signal1D(range(1000))
+        >>> s.remove_background() #doctest: +SKIP
+        Using command line, returns a spectrum
+        >>> s1 = s.remove_background(signal_range=(400,450), background_type='PowerLaw')
+        Using a full model to fit the background
+        >>> s1 = s.remove_background(signal_range=(400,450), fast=False)
+        Raises
+        ------
+        SignalDimensionError
+            If the signal dimension is not 1.
+        """
 
         self._check_signal_dimension_equals_one()
         if signal_range == 'interactive':
             br = BackgroundRemoval(self, background_type=background_type,
                                    polynomial_order=polynomial_order,
                                    fast=fast,
-                                   zero_fill=zero_fill,
                                    plot_remainder=plot_remainder,
-                                   show_progressbar=show_progressbar)
+                                   show_progressbar=show_progressbar,
+                                   zero_fill=zero_fill)
             return br.gui(display=display, toolkit=toolkit)
         else:
             if background_type in ('PowerLaw', 'Power Law'):
@@ -1123,8 +1172,13 @@ class Signal1D(BaseSignal, CommonSignal1D):
             elif background_type == 'Offset':
                 background_estimator = components1d.Offset()
             elif background_type == 'Polynomial':
-                background_estimator = components1d.Polynomial(
-                    polynomial_order)
+                with ignore_warning(message="The API of the `Polynomial` component"):
+                    background_estimator = components1d.Polynomial(
+                        polynomial_order, legacy=False)
+            elif background_type == 'Lorentzian':
+                background_estimator = components1d.Lorentzian()
+            elif background_type in ('SkewNormal', 'Skew Normal'):
+                background_estimator = components1d.SkewNormal()
             else:
                 raise ValueError(
                     "Background type: " +
@@ -1136,11 +1190,10 @@ class Signal1D(BaseSignal, CommonSignal1D):
                 fast=fast,
                 zero_fill=zero_fill,
                 show_progressbar=show_progressbar)
-            
-            
             return spectra
-#    remove_background.__doc__ %= (SHOW_PROGRESSBAR_ARG, DISPLAY_DT, TOOLKIT_DT)
-
+    remove_background.__doc__ %= (SHOW_PROGRESSBAR_ARG, DISPLAY_DT, TOOLKIT_DT)
+    
+    
     @interactive_range_selector
     def crop_signal1D(self, left_value=None, right_value=None,):
         """Crop in place the spectral dimension.
@@ -1165,7 +1218,7 @@ class Signal1D(BaseSignal, CommonSignal1D):
         """
         self._check_signal_dimension_equals_one()
         try:
-            left_value, right_value = signal_range_from_roi(left_value)
+            left_value, right_value = left_value
         except TypeError:
             # It was not a ROI, we carry on
             pass
