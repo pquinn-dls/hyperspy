@@ -96,6 +96,14 @@ def get_gui(self, toolkey, display=True, toolkit=None, **kwargs):
     else:
         raise ValueError(
             "`toolkit` must be a string, an iterable of strings or None.")
+    print("toolkey",toolkey)
+    print("================")
+    print("ui reg",UI_REGISTRY[toolkey])
+    print("================")
+    print("ui reg2",list(UI_REGISTRY.keys()))
+    
+    
+    
     if toolkey not in UI_REGISTRY or not UI_REGISTRY[toolkey]:
         propose = KNOWN_TOOLKITS - TOOLKIT_REGISTRY
         if propose:

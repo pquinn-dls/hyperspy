@@ -239,7 +239,7 @@ GUI:
     - hyperspy.Signal1D.smooth_lowess
     - hyperspy.Signal1D.smooth_total_variation
     - hyperspy.Signal1D.smooth_butterworth
-    - hyperspy.Signal1D.filter_snip    
+    - hyperspy.Signal1D.filter_snip
     - hyperspy.Signal1D.contrast_editor
     - hyperspy.Signal1D.integrate_in_range
     - hyperspy.Signal1D.remove_background
