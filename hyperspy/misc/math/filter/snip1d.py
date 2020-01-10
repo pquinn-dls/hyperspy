@@ -1,6 +1,6 @@
 import numpy as np
 
-def snip_method(spectrum,
+def snip1d(spectrum,
                 width=13, decrease_factor=np.sqrt(2),
                 iterations=16):
     """
@@ -53,9 +53,8 @@ def snip_method(spectrum,
         bg_index = background > temp
         background[bg_index] = temp[bg_index]
      
-    window_p=7
     # a final smoothing/filter with a reducing step size.
-    for i in range(10):
+    for i in range(window_p+10):
         lo_index = np.where(index>=window_p,index-window_p,0)
         hi_index = np.where(index>=window_p,index+window_p,index+index)
         hi_index = np.where(hi_index<spectra_size,hi_index,spectra_size-1)

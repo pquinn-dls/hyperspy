@@ -46,9 +46,9 @@ from hyperspy.signal_tools import (
     SmoothingLowess,
     SmoothingTV,
     ButterworthFilter)
+from hyperspy.misc.math.filter.snip1d import snip1d
 from hyperspy.ui_registry import DISPLAY_DT, TOOLKIT_DT
 from hyperspy.misc.tv_denoise import _tv_denoise_1d
-from hyperspy.misc.math.filter.snip  import snip_method
 from hyperspy.signal_tools import BackgroundRemoval
 from hyperspy.decorators import interactive_range_selector
 from hyperspy.signal_tools import IntegrateArea
@@ -967,6 +967,26 @@ class Signal1D(BaseSignal, CommonSignal1D):
     smooth_lowess.__doc__ %= (SHOW_PROGRESSBAR_ARG, PARALLEL_ARG, DISPLAY_DT,
                               TOOLKIT_DT)
 
+    def snip_filter(self, filter_window=13, iterations=16, show_progressbar=None,
+                  parallel=None):
+        """
+        Snip filter to remove background in place.
+
+        Parameters
+        ----------
+
+        Raises
+        ------
+        SignalDimensionError
+            If the signal dimension is not 1.
+        """
+        self._check_signal_dimension_equals_one()
+        self.map(snip1d, filter_window=filter_window,
+                 iterations=iterations,
+                 show_progressbar=show_progressbar,
+                 parallel=parallel)
+
+
     def smooth_tv(self, smoothing_parameter=None, show_progressbar=None,
                   parallel=None, display=True, toolkit=None):
         """
@@ -999,6 +1019,7 @@ class Signal1D(BaseSignal, CommonSignal1D):
 
     smooth_tv.__doc__ %= (SHOW_PROGRESSBAR_ARG, PARALLEL_ARG, DISPLAY_DT,
                           TOOLKIT_DT)
+
 
     def filter_butterworth(self,
                            cutoff_frequency_ratio=None,
@@ -1069,8 +1090,6 @@ class Signal1D(BaseSignal, CommonSignal1D):
             signal_range='interactive',
             background_type='Power Law',
             polynomial_order=2,
-            snip_width=10,
-            snip_iterations=16,
             fast=True,
             zero_fill=False,
             plot_remainder=True,
@@ -1081,8 +1100,6 @@ class Signal1D(BaseSignal, CommonSignal1D):
         if signal_range == 'interactive':
             br = BackgroundRemoval(self, background_type=background_type,
                                    polynomial_order=polynomial_order,
-                                   snip_width=snip_width,
-                                   snip_iterations=snip_iterations,
                                    fast=fast,
                                    zero_fill=zero_fill,
                                    plot_remainder=plot_remainder,
@@ -1098,9 +1115,6 @@ class Signal1D(BaseSignal, CommonSignal1D):
             elif background_type == 'Polynomial':
                 background_estimator = components1d.Polynomial(
                     polynomial_order)
-            elif background_type == 'Snip':
-                background_estimator = components1d.Snip(
-                    snip_width,snip_iterations)
             else:
                 raise ValueError(
                     "Background type: " +
