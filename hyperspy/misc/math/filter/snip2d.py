@@ -105,6 +105,6 @@ def snip2d(image,
     inf_ind = np.where(~np.isfinite(background_image))    
     background_image[inf_ind] = 0.0
     
-    return background_image
+    return image-background_image
     
 

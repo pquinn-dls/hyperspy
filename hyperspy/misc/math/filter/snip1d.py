@@ -70,5 +70,5 @@ def snip1d(spectrum,
     background = np.exp(np.exp(background) - 1) - 1
     inf_ind = np.where(~np.isfinite(background))    
     background[inf_ind] = 0.0
-    return background
+    return spectrum-background
 
