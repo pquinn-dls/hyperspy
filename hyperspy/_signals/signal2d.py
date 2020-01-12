@@ -33,6 +33,8 @@ from hyperspy._signals.common_signal2d import CommonSignal2D
 from hyperspy.docstrings.plot import (
     BASE_PLOT_DOCSTRING, PLOT2D_DOCSTRING, KWARGS_DOCSTRING)
 from hyperspy.docstrings.signal import SHOW_PROGRESSBAR_ARG, PARALLEL_ARG
+from hyperspy.misc.image.tools import shift_image,estimate_image_shift,\
+                                             estimate_similarity_image_shift
 
 
 _logger = logging.getLogger(__name__)
@@ -685,6 +687,308 @@ class Signal2D(BaseSignal, CommonSignal2D):
             return shifts
 
     align2D.__doc__ %= (PARALLEL_ARG)
+
+    def estimate_shift2D_similarity(self,
+                         reference='current',
+                         roi=None,
+                         correlation_threshold=None,
+                         chunk_size=10,
+                         normalize_corr=False,
+                         interpolation_order=3,
+                         medfilter=False,
+                         plot=False,
+                         dtype='float',
+                         show_progressbar=None):
+        """Estimate the shifts in a image using phase correlation
+
+        This method can only estimate the shift by comparing
+        bidimensional features that should not change position
+        between frames. To decrease the memory usage, the time of
+        computation and the accuracy of the results it is convenient
+        to select a region of interest by setting the roi keyword.
+
+        Parameters
+        ----------
+
+        reference : {'current', 'cascade' ,'first','last'}
+            If 'current' (default) the image at the current
+            coordinates is taken as reference. If 'cascade' each image
+            is aligned with the previous one. If 'stat' the translation
+            of every image with all the rest is estimated and by
+            performing statistical analysis on the result the
+            translation is estimated.
+        roi : tuple of ints or floats (left, right, top, bottom)
+             Define the region of interest. If int(float) the position
+             is given axis index(value).
+        medfilter :  bool
+            apply a median filter for noise reduction
+        plot : bool or "reuse"
+            If True plots the images after applying the filters and
+            the phase correlation. If 'reuse', it will also plot the images,
+            but it will only use one figure, and continuously update the images
+            in that figure as it progresses through the stack.
+        dtype : str or dtype
+            Typecode or data-type in which the calculations must be
+            performed.
+        show_progressbar : None or bool
+            If True, display a progress bar. If None the default is set in
+            `preferences`.
+
+        Returns
+        -------
+
+        list of applied shifts
+
+        Notes
+        -----
+
+        The statistical analysis approach to the translation estimation
+        when using `reference`='stat' roughly follows [1]_ . If you use
+        it please cite their article.
+
+        References
+        ----------
+
+        .. [1] Schaffer, Bernhard, Werner Grogger, and Gerald
+        Kothleitner. “Automated Spatial Drift Correction for EFTEM
+        Image Series.”
+        Ultramicroscopy 102, no. 1 (December 2004): 27–36.
+
+        """
+        if show_progressbar is None:
+            show_progressbar = preferences.General.show_progressbar
+        self._check_signal_dimension_equals_two()
+        if roi is not None:
+            # Get the indices of the roi
+            yaxis = self.axes_manager.signal_axes[1]
+            xaxis = self.axes_manager.signal_axes[0]
+            roi = tuple([xaxis._get_index(i) for i in roi[2:]] +
+                        [yaxis._get_index(i) for i in roi[:2]])
+
+        ref = None if reference == 'cascade' else \
+            self.__call__().copy()
+        shifts = []
+        nrows = None
+        images_number = self.axes_manager._max_index + 1
+        if reference == 'stat':
+            nrows = images_number if chunk_size is None else \
+                min(images_number, chunk_size)
+            pcarray = ma.zeros((nrows, self.axes_manager._max_index + 1,
+                                ),
+                               dtype=np.dtype([('max_value', np.float),
+                                               ('shift', np.int32,
+                                                (2,))]))
+            nshift, max_val = estimate_similarity_image_shift(
+                        self(), self(),roi=roi, medfilter=medfilter,
+                        plot=plot,
+                        interpolation_order=interpolation_order, 
+                        dtype=dtype)
+            np.fill_diagonal(pcarray['max_value'], 1.0/max_val)
+            pbar_max = nrows * images_number
+        else:
+            pbar_max = images_number
+
+        # Main iteration loop. Fills the rows of pcarray when reference
+        # is stat
+        shift = np.array([0, 0])
+        with progressbar(total=pbar_max,
+                         disable=not show_progressbar,
+                         leave=True) as pbar:
+            for i1, im in enumerate(self._iterate_signal()):
+                if reference in ['current', 'cascade']:
+                    if ref is None:
+                        ref = im.copy()
+                        #shift = np.array([0, 0])
+                    nshift, max_val = estimate_similarity_image_shift(
+                        ref, im,roi=roi, medfilter=medfilter,
+                        plot=plot,
+                        interpolation_order=interpolation_order,
+                        dtype=dtype)
+                    if reference == 'cascade':
+                        shift += nshift
+                        ref = im.copy()
+                    else:
+                        shift = nshift
+                    shifts.append(shift.copy())
+                    pbar.update(1)
+                elif reference == 'stat':
+                    if i1 == nrows:
+                        break
+                    # Iterate to fill the columns of pcarray
+                    for i2, im2 in enumerate(
+                            self._iterate_signal()):
+                        if i2 > i1:
+                            nshift, max_val = estimate_similarity_image_shift(
+                             im, im2,roi=roi, medfilter=medfilter,
+                            interpolation_order=interpolation_order,
+                            plot=plot,
+                            dtype=dtype)      
+                        pcarray[i1, i2] = 1.0/max_val, nshift
+                        del im2
+                        pbar.update(1)
+                    del im
+        if reference == 'stat':
+            # Select the reference image as the one that has the
+            # higher max_value in the row
+            sqpcarr = pcarray[:, :nrows]
+            sqpcarr['max_value'][:] = symmetrize(sqpcarr['max_value'])
+            sqpcarr['shift'][:] = antisymmetrize(sqpcarr['shift'])
+            ref_index = np.argmax(pcarray['max_value'].min(1))
+            self.ref_index = ref_index
+            shifts = (pcarray['shift'] +
+                      pcarray['shift'][ref_index, :nrows][:, np.newaxis])
+            if correlation_threshold is not None:
+                if correlation_threshold == 'auto':
+                    correlation_threshold = \
+                        (pcarray['max_value'].min(0)).max()
+                    _logger.info("Correlation threshold = %1.2f",
+                                 correlation_threshold)
+                shifts[pcarray['max_value'] <
+                       correlation_threshold] = ma.masked
+                shifts.mask[ref_index, :] = False
+
+            shifts = shifts.mean(0)
+        else:
+            shifts = np.array(shifts)
+            del ref
+        return shifts
+        
+        
+    def align2D_similarity(self, crop=True, fill_value=np.nan, shifts=None, 
+                           expand=False,
+                roi=None,
+                medfilter=True,
+                correlation_threshold=None,
+                chunk_size=30,
+                plot=False,
+                reference='current',
+                dtype='float',
+                interpolation_order=3,
+                show_progressbar=None,
+                parallel=None):
+        """Align the images in place using user provided shifts or by
+        estimating the shifts.
+
+        Please, see `estimate_shift2D` docstring for details
+        on the rest of the parameters not documented in the following
+        section
+
+        Parameters
+        ----------
+        crop : bool
+            If True, the data will be cropped not to include regions
+            with missing data
+        fill_value : int, float, nan
+            The areas with missing data are filled with the given value.
+            Default is nan.
+        shifts : None or list of tuples
+            If None the shifts are estimated using
+            `estimate_shift2D`.
+        expand : bool
+            If True, the data will be expanded to fit all data after alignment.
+            Overrides `crop`.
+        interpolation_order: int, default 1.
+            The order of the spline interpolation. Default is 1, linear
+            interpolation.
+        parallel : {None, bool}
+
+        Returns
+        -------
+        shifts : np.array
+            The shifts are returned only if `shifts` is None
+
+        Notes
+        -----
+
+        The statistical analysis approach to the translation estimation
+        when using `reference`='stat' roughly follows [1]_ . If you use
+        it please cite their article.
+
+        References
+        ----------
+
+        .. [1] Bernhard Schaffer, Werner Grogger and Gerald
+           Kothleitner. “Automated Spatial Drift Correction for EFTEM
+           Image Series.”
+           Ultramicroscopy 102, no. 1 (December 2004): 27–36.
+
+        """
+        self._check_signal_dimension_equals_two()
+        if show_progressbar is None:
+            show_progressbar = preferences.General.show_progressbar
+        if shifts is None:
+            shifts = self.estimate_shift2D_similarity(
+                roi=roi,
+                medfilter=medfilter,
+                correlation_threshold=None,
+                chunk_size=30,
+                plot=plot,
+                reference=reference,
+                dtype=dtype,
+                show_progressbar=show_progressbar)
+            return_shifts = True
+        else:
+            return_shifts = False
+        if not np.any(shifts):
+            # The shift array if filled with zeros, nothing to do.
+            return
+
+        if expand:
+            # Expand to fit all valid data
+            left, right = (int(np.floor(shifts[:, 1].min())) if
+                           shifts[:, 1].min() < 0 else 0,
+                           int(np.ceil(shifts[:, 1].max())) if
+                           shifts[:, 1].max() > 0 else 0)
+            top, bottom = (int(np.floor(shifts[:, 0].min())) if
+                           shifts[:, 0].min() < 0 else 0,
+                           int(np.ceil(shifts[:, 0].max())) if
+                           shifts[:, 0].max() > 0 else 0)
+            xaxis = self.axes_manager.signal_axes[0]
+            yaxis = self.axes_manager.signal_axes[1]
+            padding = []
+            for i in range(self.data.ndim):
+                if i == xaxis.index_in_array:
+                    padding.append((right, -left))
+                elif i == yaxis.index_in_array:
+                    padding.append((bottom, -top))
+                else:
+                    padding.append((0, 0))
+            self.data = np.pad(self.data, padding, mode='constant',
+                               constant_values=(fill_value,))
+            if left < 0:
+                xaxis.offset += left * xaxis.scale
+            if np.any((left < 0, right > 0)):
+                xaxis.size += right - left
+            if top < 0:
+                yaxis.offset += top * yaxis.scale
+            if np.any((top < 0, bottom > 0)):
+                yaxis.size += bottom - top
+
+        # Translate with sub-pixel precision if necesary
+        self._map_iterate(shift_image, iterating_kwargs=(('shift', -shifts),),
+                          fill_value=fill_value,
+                          ragged=False,
+                          parallel=parallel,
+                          interpolation_order=interpolation_order,
+                          show_progressbar=show_progressbar)
+        if crop and not expand:
+            # Crop the image to the valid size
+            shifts = -shifts
+            bottom, top = (int(np.floor(shifts[:, 0].min())) if
+                           shifts[:, 0].min() < 0 else None,
+                           int(np.ceil(shifts[:, 0].max())) if
+                           shifts[:, 0].max() > 0 else 0)
+            right, left = (int(np.floor(shifts[:, 1].min())) if
+                           shifts[:, 1].min() < 0 else None,
+                           int(np.ceil(shifts[:, 1].max())) if
+                           shifts[:, 1].max() > 0 else 0)
+            self.crop_image(top, bottom, left, right)
+            shifts = -shifts
+
+        self.events.data_changed.trigger(obj=self)
+        if return_shifts:
+            return shifts
+
 
     def crop_image(self, top=None, bottom=None,
                    left=None, right=None, convert_units=False):

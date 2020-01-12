@@ -294,7 +294,7 @@ def Similarity_ErrFunc(param,ref_images,moving_images,interpolation_order,fill_v
 
     # measure the mutual information between the reference and moving image
     mi_sum = max(mi_sum,1.0e-10)
-    return 1.0/mi_sum
+    return -mi_sum
 
 def gradient_measure(im1,im2):
     gx,gy=np.gradient(im1)

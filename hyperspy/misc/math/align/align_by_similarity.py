@@ -25,7 +25,7 @@ def Similarity_ErrFunc(param,ref_images,moving_images,interpolation_order,fill_v
         # compare the images
         mi_sum+=similarity_measure(ref_crop,_img_crop,bin_rule=bin_rule,measure=measure)
     # measure the mutual information between the reference and moving image
-    return 1.0/mi_sum
+    return -mi_sum
 
 
 #def estimate_image_shift_MI(img,ximg,interpolation_order,fill_value,bin_rule='auto',measure="MI"):
