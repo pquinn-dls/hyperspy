@@ -22,6 +22,7 @@ import dask.array as da
 import scipy as sp
 import logging
 from scipy.fftpack import fftn, ifftn
+import skimage
 from skimage.feature.register_translation import _upsampled_dft
 #import pybobyqa
 from hyperspy.misc.math.stats.mutual_information import similarity_measure
@@ -504,3 +505,677 @@ def estimate_similarity_image_shift(ref,image,guess=None,interpolation_order=1,f
 #    #return param#,besterr
 #
 
+import functools
+import numpy as np
+from scipy import ndimage as ndi
+from scipy.optimize import minimize
+
+from skimage.transform.pyramids import pyramid_gaussian
+from skimage.metrics import normalized_mutual_information
+
+__all__ = ['affine']
+
+
+def _parameter_vector_to_matrix(parameter_vector):
+    """Convert m optimization parameters to a (n+1, n+1) transformation matrix.
+    By default (the case of this function), the parameter vector is taken to
+    be the first n rows of the affine transformation matrix in homogeneous
+    coordinate space.
+    Parameters
+    ----------
+    parameter_vector : (ndim*(ndim+1)) array
+        A vector of M = N * (N+1) parameters.
+    Returns
+    -------
+    matrix : (ndim+1, ndim+1) array
+        A transformation matrix used to affine-map coordinates in an
+        ``ndim``-dimensional space.
+    """
+    m = parameter_vector.shape[0]
+    ndim = int((np.sqrt(4*m + 1) - 1) / 2)
+    top_matrix = np.reshape(parameter_vector, (ndim, ndim+1))
+    bottom_row = np.array([[0] * ndim + [1]])
+    return np.concatenate((top_matrix, bottom_row), axis=0)
+
+
+def cost_nmi(image0, image1, *, bins=100):
+    """Negative of the normalized mutual information.
+    See :func:`skimage.metrics.normalized_mutual_information` for more info.
+    Parameters
+    ----------
+    image0, image1 : array
+        The images to be compared. They should have the same shape.
+    bins : int or sequence of int, optional
+        The granularity of the histogram with which to compare the images.
+        If it's a sequence, each number is the number of bins for that image.
+    Returns
+    -------
+    cnmi : float
+        The negative of the normalized mutual information between ``image0``
+        and ``image1``.
+    """
+    return -normalized_mutual_information(image0, image1, bins=bins)
+
+
+def _param_cost(reference_image, moving_image, parameter_vector, *,
+                vector_to_matrix, cost, multichannel):
+    transformation = vector_to_matrix(parameter_vector)
+    if not multichannel:
+        transformed = ndi.affine_transform(moving_image, transformation,
+                                           order=1)
+    else:
+        transformed = np.zeros_like(moving_image)
+        for ch in range(moving_image.shape[-1]):
+            ndi.affine_transform(moving_image[..., ch], transformation,
+                                 order=1, output=transformed[..., ch])
+    return cost(reference_image, transformed)
+
+
+
+def affine(reference_image, moving_image,
+           *,
+           cost=cost_nmi,
+           initial_parameters=None,
+           vector_to_matrix=None,
+           translation_indices=None,
+           inverse=True,
+           pyramid_scale=2,
+           pyramid_minimum_size=32,
+           multichannel=False,
+           level_callback=None,
+           method='Powell',
+           **kwargs):
+    """Find a transformation matrix to register a moving image to a reference.
+    Parameters
+    ----------
+    reference_image : ndarray
+        A reference image to compare against the target.
+    moving_image : ndarray
+        Our target for registration. Transforming this image using the
+        returned matrix aligns it with the reference.
+    cost : function, optional
+        A cost function which takes two images and returns a score which is
+        at a minimum when images are aligned. Uses the normalized mutual
+        information by default.
+    initial_parameters : array of float, optional
+        The initial vector to optimize. This vector should have the same
+        dimensionality as the transform being optimized. For example, a 2D
+        affine transform has 6 parameters. A 2D rigid transform, on the other
+        hand, only has 3 parameters.
+    vector_to_matrix : callable, array (M,) -> array-like (N+1, N+1), optional
+        A function to convert a linear vector of parameters, as used by
+        `scipy.optimize.minimize`, to an affine transformation matrix in
+        homogeneous coordinates.
+    translation_indices : array of int, optional
+        The location of the translation parameters in the parameter vector. If
+        None, the positions of the translation parameters in the raveled
+        affine transformation matrix, in homogeneous coordinates, are used. For
+        example, in a 2D transform, the translation parameters are in the
+        top two positions of the third column of the 3 x 3 matrix, which
+        corresponds to the linear indices [2, 5].
+        The translation parameters are special in this class of transforms
+        because they are the only ones not scale-invariant. This means that
+        they need to be adjusted for each level of the image pyramid.
+    inverse : bool, optional
+        Whether to return the inverse transform, which converts coordinates
+        in the reference space to coordinates in the target space. For
+        technical reasons, this is the transform expected by
+        ``scipy.ndimage.affine_transform`` to map the target image to the
+        reference space. Defaults to True.
+    pyramid_scale : float, optional
+        Scaling factor to generate the image pyramid. The affine transformation
+        is estimated first for a downscaled version of the image, then
+        progressively refined with higher resolutions. This parameter controls
+        the increase in resolution at each level.
+    pyramid_minimum_size : integer, optional
+        The smallest size for an image along any dimension. This value
+        determines the size of the image pyramid used. Choosing a smaller value
+        here can cause registration errors, but a larger value could speed up
+        registration when the alignment is easy.
+    multichannel : bool, optional
+        Whether the last axis of the image is to be interpreted as multiple
+        channels or another spatial dimension. By default, this is False.
+    level_callback : callable, optional
+        If given, this function is called once per pyramid level with a tuple
+        containing the current downsampled image, transformation matrix, and
+        cost as the argument. This is useful for debugging or for plotting
+        intermediate results during the iterative process.
+    method : string or callable
+        Method of minimization.  See ``scipy.optimize.minimize`` for available
+        options.
+    **kwargs : keyword arguments
+        Keyword arguments passed through to ``scipy.optimize.minimize``
+    Returns
+    -------
+    matrix : array, or object coercible to array
+        A transformation matrix used to obtain a new image.
+        ``ndi.affine_transform(moving, matrix)`` will align the moving image to
+        the reference.
+    Example
+    -------
+    >>> from skimage.data import astronaut
+    >>> reference_image = astronaut()[..., 1]
+    >>> r = -0.12  # radians
+    >>> c, s = np.cos(r), np.sin(r)
+    >>> matrix_transform = np.array([[c, -s, 0], [s, c, 50], [0, 0, 1]])
+    >>> moving_image = ndi.affine_transform(reference_image, matrix_transform)
+    >>> matrix = affine(reference_image, moving_image)
+    >>> registered_moving = ndi.affine_transform(moving_image, matrix)
+    """
+
+    # ignore the channels if present
+    ndim = reference_image.ndim if not multichannel else reference_image.ndim - 1
+    if ndim == 0:
+        raise ValueError(
+            'Input images must have at least 1 spatial dimension.'
+        )
+
+    min_dim = min(reference_image.shape[:ndim])
+    nlevels = int(np.floor(np.log2(min_dim) - np.log2(pyramid_minimum_size)))
+
+    pyramid_ref = pyramid_gaussian(reference_image, downscale=pyramid_scale,
+                                   max_layer=nlevels,
+                                   multichannel=multichannel)
+    pyramid_mvg = pyramid_gaussian(moving_image, downscale=pyramid_scale,
+                                   max_layer=nlevels,
+                                   multichannel=multichannel)
+    image_pairs = reversed(list(zip(pyramid_ref, pyramid_mvg)))
+
+    if initial_parameters is None:
+        initial_parameters = np.eye(ndim, ndim + 1).ravel()
+    parameter_vector = initial_parameters
+
+    if vector_to_matrix is None:
+        vector_to_matrix = _parameter_vector_to_matrix
+
+    if translation_indices is None:
+        translation_indices = slice(ndim, ndim**2 - 1, ndim)
+
+    for ref, mvg in image_pairs:
+        parameter_vector[translation_indices] *= pyramid_scale
+        _cost = functools.partial(_param_cost, ref, mvg,
+                                  vector_to_matrix=vector_to_matrix,
+                                  cost=cost, multichannel=multichannel)
+        result = minimize(_cost, x0=parameter_vector, method=method, **kwargs)
+        parameter_vector = result.x
+        if level_callback is not None:
+            level_callback(
+                (mvg,
+                 vector_to_matrix(parameter_vector),
+                 result.fun)
+            )
+
+    matrix = vector_to_matrix(parameter_vector)
+
+    if not inverse:
+        # estimated is already inverse, so we invert for forward transform
+        matrix = np.linalg.inv(matrix)
+
+    return matrix
+
+
+
+
+def affine_matrix_to_params(matrix: np.array):
+
+    '''
+
+    Converts a 3x3 affine transformation matrix to a list of six affine transformation parameters.
+
+    '''
+
+    assert len(matrix.shape) == 2
+
+    assert matrix.shape[0] == 3
+
+    assert matrix.shape[1] == 3
+
+    a0 = matrix[0][0]
+
+    a1 = matrix[0][1]
+
+    a2 = matrix[0][2]
+
+    b0 = matrix[1][0]
+
+    b1 = matrix[1][1]
+
+    b2 = matrix[1][2]
+
+    scale_x = math.sqrt(a0**2 + b0**2)
+
+    scale_y = math.sqrt(a1**2 + b1**2)
+
+    rotation = math.atan2(b0, a0)
+
+    shear = math.atan2(-a1, b1) - rotation
+
+    offset_x = a2
+
+    offset_y = b2
+
+    return [scale_x, scale_y, shear, rotation, offset_x, offset_y]
+
+def transform_using_values(arr_in: np.array, values: list, cval=-1):
+    '''Applies a translation or affine transformation to input_image
+    using the parameter values in `values
+  
+    Parameters
+    ----------
+    input_image : ndarray
+    values : ndarray or length 2 or 6
+        array of length 2 is a translation containing offset_x,offset_y
+        array of length 6 is an affine transformation containing offset_x,offset_y,scale_x,scale_y,shear,rotation
+    cval : int or float , default : -1 
+        Fill value for border regions after transformation
+        
+    Returns
+    -------
+    ndarray
+        Transformed image    
+    
+    '''
+    scale_x = 0.0
+    scale_y = 0.0
+    shear_radians = 0.0
+    rotate_radians = 0.0
+
+    if len(values==2):
+        offset_x = values[0]
+        offset_y = values[1]
+    elif len(values) == 6:
+        offset_x = values[0]
+        offset_y = values[1]
+        scale_x = values[2]
+        scale_y = values[3]
+        shear_radians = values[4]
+        rotate_radians = values[5]
+
+    # Image must be shifted by minus half each dimension, then transformed, then shifted back.
+    # This way, rotations and shears will be about the centre of the image rather than the top-left corner.
+    shift_x = -0.5 * arr_in.shape[1]
+    shift_y = -0.5 * arr_in.shape[0]
+    a0 = scale_x * np.cos(rotate_radians)
+    a1 = -scale_y * np.sin(rotate_radians + shear_radians)
+    a2 = a0 * shift_x + a1 * shift_y + offset_x - shift_x
+    b0 = scale_x * np.sin(rotate_radians)
+    b1 = scale_y * np.cos(rotate_radians + shear_radians)
+    b2 = b0 * shift_x + b1 * shift_y + offset_y - shift_y
+    tform = skimage.transform.AffineTransform(matrix=np.array([[a0, a1, a2], [b0, b1, b2], [0, 0, 1]]))
+    arr_out = skimage.transform.warp(arr_in.astype(float), tform.inverse, cval=cval)
+    return arr_out
+
+
+def scale(input_image: np.array, scale_factor_x, scale_factor_y):
+    '''Scales the image represented by `arr_in` by scale factors `scale_factor_x` 
+    and `scale_factor_y`.
+
+    Parameters
+    ----------
+    input_image : ndarray
+    scale_x : float
+    scale_y : float
+
+    Returns
+    ndarray
+        Scaled version of input_image
+
+    '''
+
+    return transform_using_values(input_image, [scale_factor_x, scale_factor_y, 0.0, 0.0, 0.0, 0.0])
+
+
+
+
+
+def rotate(arr_in: np.array, rotate_radians):
+
+    '''
+
+    Rotates the image represented by `arr_in` by `rotate_radians` radians in the clockwise direction.
+
+    '''
+
+    return transform_using_values(arr_in, [1.0, 1.0, 0.0, rotate_radians, 0.0, 0.0])
+
+        
+
+
+
+def transform_using_matrix(arr_in: np.array, matrix):
+
+    '''
+
+    Applies an affine transformation specified by `matrix` to `arr_in`.
+
+    '''
+
+    tform = skimage.transform.AffineTransform(matrix=matrix)
+
+    return skimage.transform.warp(arr_in/arr_in.max(), tform.inverse, cval=arr_in.mean()/arr_in.max())*arr_in.max()
+
+
+
+def optimise_affine(arr_moving: np.array, arr_ref: np.array, scale_x=1.0, scale_y=1.0, shear_radians=0.0, rotate_radians=0.0, offset_x=0.0, offset_y=0.0, method='Powell', bounds=None, isotropic_scaling=False, lock_scale=False, lock_shear=False, lock_rotation=False, lock_translation=False, debug=False):
+
+    '''
+
+    Uses a local optimisation algorithm to obtain a set of affine transform parameters that maximises the mutual information between `arr_transformed` and `arr_ref`, where `arr_transformed` is the transformed version of `arr_moving`.
+
+    
+
+    `arr_moving`: The moving image.
+
+    `arr_ref`: The reference image. The function will attempt to align `arr_moving` with `arr_ref`.
+
+    `scale_x`, `scale_y`, `shear_radians`, `rotate_radians`, `offset_x`, `offset_y`: Initial guesses of parameter values, to be fed into the optimisation algorithm.
+
+    `method`: The name of the local optimisation algorithm to be used.
+
+    `bounds`: If not None, this is a Numpy array of six 2-tuples. Each tuple contains the minimum and maximum permitted values (in that order) of the corresponding affine transformation parameter. If `bounds` is None, default minimum and maximum values will be used.
+
+    `isotropic_scaling`: If True, the horizontal and vertical scale parameters will be treated as a single scale parameter, such that any change in scale will be by the same scale factor in the horizontal and vertical directions.
+
+    `lock_scale`, `lock_shear`, `lock_rotation`, `lock_translation`: If True, the corresponding affine translation parameter(s) will be set to a default value and no attempt will be made to optimise them.
+
+    `debug`: If True, debugging messages will be printed during execution.
+
+    
+
+    In theory, `optimise_affine_v2` does everything this function does and optionally more on top of that. However, `optimise_affine` seems to be faster, even when the parameters of `optimise_affine_v2` are set in such a way that it might be expected to do almost exactly the same thing.
+
+    '''
+
+    params = np.array([scale_x, scale_y, shear_radians, rotate_radians, offset_x, offset_y])
+
+    (height, width) = arr_moving.shape
+
+    if bounds is None:
+
+        bounds = np.array([(0.5, 2), (0.5, 2), (-math.pi/6, math.pi/6), (-math.pi/6, math.pi/6), (-height*0.2, height*0.2), (-width*0.2, width*0.2)])
+
+    
+
+    def inverse_mutual_information_after_transform(free_params):
+
+        def _outside_limits(x: np.array):
+
+            [xmin, xmax] = np.array(bounds).T
+
+            return (np.any(x < xmin) or np.any(x > xmax))
+
+        def _fit_params_to_bounds(params):
+
+            assert len(params) == 6
+
+            params_out = np.array(params)
+
+            for i in range(6):
+
+                params_out[i] = max(params[i], bounds[i][0])
+
+                params_out[i] = min(params_out[i], bounds[i][1])
+
+            return params_out
+
+        transform_params = fill_missing_parameters(free_params, isotropic_scaling, lock_scale, lock_shear, lock_rotation, lock_translation)
+
+        arr_transformed = transform_using_values(arr_moving, transform_params)
+
+        mi = im.similarity_measure(arr_transformed, arr_ref)
+
+        mi_scaled = mi/(arr_ref.size)
+
+        outside = _outside_limits(transform_params)
+
+        metric = 1/(mi_scaled + 1)
+
+        if outside:
+
+            fitted_params = _fit_params_to_bounds(transform_params)
+
+            arr_transformed_fitted = transform_using_values(arr_moving, fitted_params)
+
+            mi_fitted = im.similarity_measure(arr_transformed_fitted, arr_ref)/(arr_ref.size)
+
+            metric = 1/mi_fitted
+
+        if debug:
+
+            print((1/metric, free_params))
+
+        assert (outside and 1/metric <= 1) or ((not outside) and 1/metric >= 1)
+
+        return metric
+
+    
+
+    initial_guess = remove_locked_parameters(params, isotropic_scaling, lock_scale, lock_shear, lock_rotation, lock_translation)
+
+    
+
+    optimisation_result = scipy.optimize.minimize(inverse_mutual_information_after_transform, initial_guess, method=method)
+
+    if optimisation_result.success:
+
+        optimised_parameters = optimisation_result.x
+
+        # If there is only one optimised parameter, optimisation_parameters will be of the form np.array(param), which has zero length.
+
+        # Otherwise, it will be of the form np.array([param1, param2, ...]).
+
+        # np.array(param) should therefore be converted to the form np.array([param]), which has length 1.
+
+        if len(optimised_parameters.shape) == 0:
+
+            optimised_parameters = np.array([optimised_parameters])
+
+        return fill_missing_parameters(optimised_parameters, isotropic_scaling, lock_scale, lock_shear, lock_rotation, lock_translation)
+
+    else:
+
+        raise ValueError(optimisation_result.message)
+
+    
+
+    
+
+def optimise_affine_v2(
+
+    arr_moving: np.array,
+
+    arr_ref: np.array,
+
+    arr_ref_ns: np.array=None,
+
+    bounds: dict={},
+
+    lock_strings: list=[],
+
+    initial_guess: dict={},
+
+    debug=False,
+
+    local_optimisation_method='Powell',
+
+    similarity_measure: str='',
+
+    ns_max_groups=6,
+
+    basinhopping=False,
+
+    basinhopping_kwargs={}):
+
+    '''
+
+    Uses a local optimisation algorithm to obtain a set of affine transform parameters that maximises the mutual information between `arr_transformed` and `arr_ref`, where `arr_transformed` is the transformed version of `arr_moving`.
+
+    
+
+    `arr_moving`: The moving image.
+
+    `arr_ref`: The reference image. The function will attempt to align `arr_moving` with `arr_ref`.
+
+    `arr_ref_ns`: If not None, this should be the output of `get_neighbour_similarity(arr_ref)`. Only used if `similarity_measure` is 'neighbour_similarity'.
+
+    `bounds`: A dictionary of up to six 2-tuples. The key corresponding to each tuple is the name of an affine transformation parameter. Each tuple contains the minimum and maximum permitted values (in that order) of the corresponding affine transformation parameter. If `bounds` is missing any parameters, default minimum and maximum values will be used for those parameters.
+
+    `lock_strings`: a list of some of the following strings (or an empty list):
+
+        - 'isotropic_scaling'
+
+        - 'lock_scale'
+
+        - 'lock_scale_x'
+
+        - 'lock_scale_y'
+
+        - 'lock_shear'
+
+        - 'lock_rotation'
+
+        - 'lock_translation'
+
+        - 'lock_translation_x'
+
+        - 'lock_translation_y'
+
+    If 'isotropic_scaling' is present, the horizontal and vertical scale parameters will be treated as a single scale parameter, such that any change in scale will be by the same scale factor in the horizontal and vertical directions.
+
+    If one or more of the other strings is present, the corresponding affine translation parameter(s) will be set to a default value and no attempt will be made to optimise them.
+
+    `initial_guess`: A dictionary of up to six float values. The key corresponding to each float is the name of an affine transformation parameter. Each float represents the initial guess for the corresponding affine transformation parameter, which will be fed into the optimisation algorithm. If `initial_guess` is missing any parameters, default values will be used for those parameters.
+
+    `debug`: If True, debugging messages will be printed during execution.
+
+    `local_optimisation_method`: The name of the local optimisation algorithm to be used.
+
+    `similarity_measure`: A string representing the similarity measure to be used. Currently the following strings are recognised:
+
+        - 'neighbour_similarity' (corresponds to `similarity_measure_using_neighbour_similarity`)
+
+        - 'overlap' (corresponds to `similarity_measure_area_of_overlap`)
+
+    If `similarity_measure` does not match any of these, the similarity measure used will default to `similarity_measure_after_transform`.
+
+    `ns_max_groups`: The value of the `max_groups` parameter passed into `similarity_measure_using_neighbour_similarity`. Only used if `similarity_measure` is 'neighbour_similarity'.
+
+    `basinhopping`: If True, a basin-hopping algorithm is used rather than just the local optimisation method. The function will take longer to execute if this is the case, but the results may be better.
+
+    `basinhopping_kwargs`: Any keyword arguments to pass into the basin-hopping algorithm. Only used if `basinhopping` is True.
+
+    '''
+
+        
+
+    params = params_dict_to_array(initial_guess)
+
+    bounds_list = bounds_dict_to_array(bounds)
+
+    (height, width) = arr_moving.shape
+
+    if arr_ref_ns is None and similarity_measure == 'neighbour_similarity':
+
+        arr_ref_ns = get_neighbour_similarity(arr_ref)
+
+    
+
+    if basinhopping:
+
+        if 'T' not in basinhopping_kwargs:
+
+            basinhopping_kwargs['T'] = 0.5
+
+        if 'take_step' not in basinhopping_kwargs:
+
+            basinhopping_kwargs['take_step'] = RandomDisplacementBounds(xmin=0, xmax=1, stepsize=0.5)
+
+        if 'minimizer_kwargs' in basinhopping_kwargs:
+
+            if 'method' not in basinhopping_kwargs['minimizer_kwargs']:
+
+                basinhopping_kwargs['minimizer_kwargs']['method'] = local_optimisation_method
+
+        else:
+
+            basinhopping_kwargs['minimizer_kwargs'] = {'method': local_optimisation_method}
+
+    
+
+    def _chosen_similarity_measure(params: np.array):
+
+        if similarity_measure == 'neighbour_similarity':
+
+            return similarity_measure_using_neighbour_similarity(arr_moving, arr_ref, arr_ref_ns, params, debug=debug, max_groups=ns_max_groups)
+
+        elif similarity_measure == 'overlap':
+
+            return similarity_measure_area_of_overlap(arr_ref, arr_moving, params)
+
+        else:
+
+            return similarity_measure_after_transform(arr_ref, arr_moving, params)
+
+            
+
+    def _error_metric_after_transform(params_scaled):
+
+        transform_params = recover_parameters_from_scaled_guess(params_scaled, bounds_list, lock_strings)
+
+        sm = _chosen_similarity_measure(transform_params)
+
+        outside = outside_bounds(transform_params, bounds_list)
+
+        error_metric = 1/(sm + 1)
+
+        if outside:
+
+            fitted_params = fit_to_bounds(transform_params, bounds_list)
+
+            sm_fitted = _chosen_similarity_measure(fitted_params)
+
+            error_metric = np.float_(np.finfo(np.float_).max)
+
+            if sm_fitted > 0:
+
+                error_metric = 1/sm_fitted
+
+        if debug:
+
+            print((1/error_metric, list_free_parameters(transform_params, lock_strings)))
+
+        if outside:
+
+            assert 1/error_metric <= 1
+
+        else:
+
+            assert 1/error_metric >= 1
+
+        return error_metric
+
+    
+
+    guess = list_free_parameters_scaled_to_bounds(params, bounds_list, lock_strings)
+
+    
+
+    if basinhopping:
+
+        optimisation_result = scipy.optimize.basinhopping(_error_metric_after_transform, guess, **basinhopping_kwargs)
+
+    else:
+
+        optimisation_result = scipy.optimize.minimize(_error_metric_after_transform, guess, method=local_optimisation_method)
+
+    if debug:
+
+        print(optimisation_result)
+
+    optimised_parameters = optimisation_result.x.reshape(optimisation_result.x.size)
+
+    return recover_parameters_from_scaled_guess(optimised_parameters, bounds_list, lock_strings)
+
+
+
+        
