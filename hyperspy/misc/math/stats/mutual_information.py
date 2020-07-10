@@ -1,8 +1,12 @@
 
 import numpy as np
-from hyperspy.misc.math.stats.histogram_tools import scott_bin_width,\
-                                                  freedman_bin_width,\
-                                                   sturges_bin_width
+from hyperspy.external.astroML.histtools import (scotts_bin_width,
+                                                 knuth_bin_width,
+                                                 freedman_bin_width)
+
+#from hyperspy.misc.math.stats.histogram_tools import scott_bin_width,\
+#                                                  freedman_bin_width,\
+#                                                   sturges_bin_width
 from scipy.ndimage import gaussian_filter
 #from fastkde import fastKDE
 
@@ -163,7 +167,7 @@ def mutual_information(arr1,arr2,norm=True,bin_rule="sturges"):
     return i_xy
 
 
-def similarity_measure(image1,image2,norm=True,bin_rule="sturges",measure="MI"):
+def similarity_measure(image1,image2,norm=True,bin_rule="scotts",measure="PMI"):
     """
     
     Computes mutual information between two images variate from a
@@ -190,8 +194,8 @@ def similarity_measure(image1,image2,norm=True,bin_rule="sturges",measure="MI"):
     arr2 = image2.ravel()
     if bin_rule ==  None or bin_rule == "sturges":
         dx,Nbins = sturges_bin_width(arr1)
-    elif bin_rule == "scott":
-        dx,Nbins = scott_bin_width(arr1)
+    elif bin_rule == "scotts":
+        dx,Nbins = scotts_bin_width(arr1)
     elif bin_rule == "freedman":
         dx,Nbins = freedman_bin_width(arr1)
     elif bin_rule == 'auto':
