@@ -38,7 +38,7 @@ from hyperspy._signals.common_signal2d import CommonSignal2D
 from hyperspy.docstrings.plot import (
     BASE_PLOT_DOCSTRING, PLOT2D_DOCSTRING, KWARGS_DOCSTRING)
 from hyperspy.docstrings.signal import SHOW_PROGRESSBAR_ARG, PARALLEL_ARG
-from hyperspy.misc.image.tools_shift import (estimate_image_shift_mi,
+from hyperspy.misc.image.translation import (estimate_image_shift_mi,
                                              estimate_image_shift,shift_image)
 
 

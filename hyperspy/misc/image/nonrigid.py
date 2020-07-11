@@ -68,3 +68,6 @@ def computeDerivatives(im1: np.ndarray, im2: np.ndarray) -> Tuple[np.ndarray, np
     ft = filter2(im1, kernelT) + filter2(im2, -kernelT)
 
     return fx, fy, ft
+
+
+

@@ -22,7 +22,9 @@ import math
 import functools
 from skimage.transform.pyramids import pyramid_gaussian
 from hyperspy.misc.image.similarity import mutual_information
-from scipy import stats
+from hyperspy.misc.image.tools import (hanning2d,
+                                                  sobel_filter,
+                                                  fft_correlation)
 from scipy.optimize import minimize
 from hyperspy.misc.math_tools import optimal_fft_size
 import dask.array as da
@@ -37,7 +39,6 @@ except ModuleNotFoundError:
 _logger = logging.getLogger(__name__)
 
 
-
 def shift_image(im, shift=0, interpolation_order=1, fill_value=0.0):
     if np.any(shift):
         fractional, integral = np.modf(shift)
@@ -49,76 +50,6 @@ def shift_image(im, shift=0, interpolation_order=1, fill_value=0.0):
         return sp.ndimage.shift(im, shift, cval=fill_value, order=order)
     else:
         return im
-
-
-def triu_indices_minus_diag(n):
-    """Returns the indices for the upper-triangle of an (n, n) array
-    excluding its diagonal
-
-    Parameters
-    ----------
-    n : int
-        The length of the square array
-
-    """
-    ti = np.triu_indices(n)
-    isnotdiag = ti[0] != ti[1]
-    return ti[0][isnotdiag], ti[1][isnotdiag]
-
-
-def hanning2d(M, N):
-    """
-    A 2D hanning window created by outer product.
-    """
-    return np.outer(np.hanning(M), np.hanning(N))
-
-
-def sobel_filter(im):
-    sx = sp.ndimage.sobel(im, axis=0, mode='constant')
-    sy = sp.ndimage.sobel(im, axis=1, mode='constant')
-    sob = np.hypot(sx, sy)
-    return sob
-
-
-def fft_correlation(in1, in2, normalize=False, real_only=False):
-    """Correlation of two N-dimensional arrays using FFT.
-
-    Adapted from scipy's fftconvolve.
-
-    Parameters
-    ----------
-    in1, in2 : array
-        Input arrays to convolve.
-    normalize: bool, default False
-        If True performs phase correlation.
-    real_only : bool, default False
-        If True, and in1 and in2 are real-valued inputs, uses
-        rfft instead of fft for approx. 2x speed-up.
-
-    """
-    s1 = np.array(in1.shape)
-    s2 = np.array(in2.shape)
-    size = s1 + s2 - 1
-
-    # Calculate optimal FFT size
-    complex_result = (in1.dtype.kind == 'c' or in2.dtype.kind == 'c')
-    fsize = [optimal_fft_size(a, not complex_result) for a in size]
-
-    # For real-valued inputs, rfftn is ~2x faster than fftn
-    if not complex_result and real_only:
-        fft_f, ifft_f = np.fft.rfftn, np.fft.irfftn
-    else:
-        fft_f, ifft_f = np.fft.fftn, np.fft.ifftn
-
-    fprod = fft_f(in1, fsize)
-    fprod *= fft_f(in2, fsize).conjugate()
-
-    if normalize is True:
-        fprod = np.nan_to_num(fprod / np.absolute(fprod))
-
-    ret = ifft_f(fprod).real.copy()
-
-    return ret, fprod
 
 
 def estimate_image_shift(ref, image, roi=None, sobel=True,
@@ -180,12 +111,11 @@ def estimate_image_shift(ref, image, roi=None, sobel=True,
 
     References
     ----------
-    .. [*] Bernhard Schaffer, Werner Grogger and Gerald Kothleitner. 
-       “Automated Spatial Drift Correction for EFTEM Image Series.” 
+    .. [*] Bernhard Schaffer, Werner Grogger and Gerald Kothleitner.
+       “Automated Spatial Drift Correction for EFTEM Image Series.”
        Ultramicroscopy 102, no. 1 (December 2004): 27–36.
 
     """
-
     ref, image = da.compute(ref, image)
     # Make a copy of the images to avoid modifying them
     ref = ref.copy().astype(dtype)
@@ -294,20 +224,21 @@ def estimate_image_shift(ref, image, roi=None, sobel=True,
     else:
         return -shifts
 
+
 def _shift_cost_function(reference_image, moving_image, shift,
                          bin_rule='scott', cval=0.0, order=1):
     transformed = shift_image(moving_image, shift, interpolation_order=order,
                               fill_value=cval)
     nmi = -mutual_information(reference_image.ravel(),
-                               transformed.ravel(),
-                               bin_rule=bin_rule)
+                              transformed.ravel(),
+                              bin_rule=bin_rule)
     return nmi
 
 
-
 def estimate_image_shift_mi(reference_image, moving_image,
-                            roi=None, sobel=False,
-                            medfilter=False, hanning=False,
+                            roi=None,
+                            medfilter=False, 
+                            hanning=False,
                             initial_shift=(0.0, 0.0),
                             bin_rule='scotts',
                             method="Powell",
@@ -395,8 +326,6 @@ def estimate_image_shift_mi(reference_image, moving_image,
             # The size is fixed at 3 to be consistent
             # with the previous implementation.
             im[:] = sp.ndimage.median_filter(im, size=3)
-        if sobel is True:
-            im[:] = sobel_filter(im)
 
     min_dim = min(reference_image.shape[:ndim])
     # number of pyramid levels depends on scaling used
