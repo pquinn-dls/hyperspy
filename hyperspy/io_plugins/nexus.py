@@ -211,13 +211,15 @@ def _extract_hdf_dataset(group, dataset, lazy=False):
     """
     data = group[dataset]
     if lazy:
-        if "chunks" in data.attrs.keys():
-            chunks = data.attrs["chunks"]
+        if data.chunks:
+            chunks = data.chunks
         else:
             chunks = get_signal_chunks(data.shape, data.dtype)
-        data_lazy = da.from_array(data, chunks=chunks)
+        data_lazy = da.from_array(data,chunks=chunks)
+
     else:
         data_lazy = np.array(data)
+
 
     nav_list = []
     for i in range(data.ndim):
@@ -349,8 +351,8 @@ def _nexus_dataset_to_signal(group, nexus_dataset_path, lazy=False):
                     detector_index = detector_index+1
 
     if lazy:
-        if "chunks" in data.attrs.keys():
-            chunks = data.attrs["chunks"]
+        if data.chunks:
+            chunks = data.chunks
         else:
             chunks = get_signal_chunks(data.shape, data.dtype)
         data_lazy = da.from_array(data, chunks=chunks)
@@ -449,12 +451,12 @@ def file_reader(filename, lazy=False, dataset_keys=None,
     mapping = kwds.get('mapping', {})
     original_metadata = {}
     learning = {}
-    fin = h5py.File(filename, "r+")
+    fin = h5py.File(filename, "r")
     signal_dict_list = []
 
     dataset_keys = _check_search_keys(dataset_keys)
     metadata_keys = _check_search_keys(metadata_keys)
-    original_metadata = _load_metadata(fin)
+    original_metadata = _load_metadata(fin,lazy=lazy)
     # some default values...
     nexus_data_paths = []
     hdf_data_paths = []
@@ -500,7 +502,7 @@ def file_reader(filename, lazy=False, dataset_keys=None,
             else:
                 dictionary["original_metadata"] = \
                     _find_search_keys_in_dict(original_metadata,
-                                              search_keys=metadata_keys)
+                                              search_keys=metadata_keys)[entryname]
             # test if it's a hyperspy_nexus format and update metadata
             # as appropriate.
             if "attrs" in original_metadata and \
@@ -547,7 +549,6 @@ def file_reader(filename, lazy=False, dataset_keys=None,
                                    'title': title}}
                 datadict["metadata"].update(basic_metadata)
                 signal_dict_list.append(datadict)
-
     return signal_dict_list
 
 
@@ -1056,7 +1057,8 @@ def _write_signal(signal, nxgroup, signal_name, **kwds):
     if smd.record_by:
         nxdata.attrs["interpretation"] = _parse_to_file(smd.record_by)
     datastr = _parse_to_file("data")
-    overwrite_dataset(nxdata, signal.data, datastr, chunks=None, **kwds)
+    overwrite_dataset(nxdata, signal.data, datastr, chunks=None,
+                      signal_axes=signal.axes_manager.signal_indices_in_array,**kwds)
     axis_names = [_parse_to_file(".")] * len(signal.axes_manager.shape)
     for i, axis in enumerate(signal.axes_manager._axes):
         if axis.name != t.Undefined:
