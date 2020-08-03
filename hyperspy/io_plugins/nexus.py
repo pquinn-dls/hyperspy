@@ -215,11 +215,10 @@ def _extract_hdf_dataset(group, dataset, lazy=False):
             chunks = data.chunks
         else:
             chunks = get_signal_chunks(data.shape, data.dtype)
-        data_lazy = da.from_array(data,chunks=chunks)
+        data_lazy = da.from_array(data, chunks=chunks)
 
     else:
         data_lazy = np.array(data)
-
 
     nav_list = []
     for i in range(data.ndim):
@@ -456,7 +455,7 @@ def file_reader(filename, lazy=False, dataset_keys=None,
 
     dataset_keys = _check_search_keys(dataset_keys)
     metadata_keys = _check_search_keys(metadata_keys)
-    original_metadata = _load_metadata(fin,lazy=lazy)
+    original_metadata = _load_metadata(fin, lazy=lazy)
     # some default values...
     nexus_data_paths = []
     hdf_data_paths = []
@@ -501,8 +500,11 @@ def file_reader(filename, lazy=False, dataset_keys=None,
                     original_metadata[entryname]
             else:
                 dictionary["original_metadata"] = \
-                    _find_search_keys_in_dict(original_metadata,
-                                              search_keys=metadata_keys)[entryname]
+                extracted_dict = _find_search_keys_in_dict(original_metadata,
+                                                           search_keys=metadata_keys)
+                if entryname in extracted_dict:
+                    dictionary["original_metadata"] = extracted_dict[entryname]
+                    
             # test if it's a hyperspy_nexus format and update metadata
             # as appropriate.
             if "attrs" in original_metadata and \
@@ -1058,7 +1060,7 @@ def _write_signal(signal, nxgroup, signal_name, **kwds):
         nxdata.attrs["interpretation"] = _parse_to_file(smd.record_by)
     datastr = _parse_to_file("data")
     overwrite_dataset(nxdata, signal.data, datastr, chunks=None,
-                      signal_axes=signal.axes_manager.signal_indices_in_array,**kwds)
+                      signal_axes=signal.axes_manager.signal_indices_in_array, **kwds)
     axis_names = [_parse_to_file(".")] * len(signal.axes_manager.shape)
     for i, axis in enumerate(signal.axes_manager._axes):
         if axis.name != t.Undefined:

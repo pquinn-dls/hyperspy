@@ -85,11 +85,11 @@ class TestDLSNexus():
         s = load(file3, nxdata_only=True, metadata_keys=metadata_keys)
         # hardlinks are false - soft linked data is loaded
         if metadata_keys == "m1_y":
-            assert s[1].original_metadata.alias_metadata.\
+            assert s[1].original_metadata.instrument.beamline.M1.\
                 m1_y.attrs.units == "mm"
         else:
             with pytest.raises(AttributeError):
-                assert s[0].original_metadata.alias_metadata.\
+                assert s[0].original_metadata.instrument.beamline.M1.\
                     m1_y.attrs.units == "mm"
 
     def test_value(self):
